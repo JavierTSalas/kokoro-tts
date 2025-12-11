@@ -1,73 +1,58 @@
-# React + TypeScript + Vite
+# Client-Side Neural TTS (Kokoro-82M)
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+A high-quality, privacy-focused Text-to-Speech application that runs entirely in your browser. Powered by **Kokoro-82M** and **WebAssembly**.
 
-Currently, two official plugins are available:
+## 🚀 Technology Stack
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+- **Frontend Framework**: [React](https://react.dev/) + [Vite](https://vitejs.dev/)
+- **Language**: [TypeScript](https://www.typescriptlang.org/)
+- **AI Model**: [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) (82 million parameters)
+- **Inference Engine**: [ONNX Runtime Web](https://onnxruntime.ai/docs/execution-providers/WebAssembly-ExecutionProvider.html) via [Transformers.js](https://huggingface.co/docs/transformers.js/index) or direct `kokoro-js` wrapper.
+- **Styling**: Vanilla CSS (CSS Variables, Glassmorphism)
 
-## React Compiler
+## 🧠 How It Works
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+Unlike traditional TTS systems that rely on cloud APIs (like Google Cloud TTS or AWS Polly) or robotic operating system APIs (Web Speech API), this application runs a **Deep Learning model directly in your browser**.
 
-## Expanding the ESLint configuration
+1.  **Model Loading**:
+    - On first load, the app downloads the **quantized ONNX model (~80MB)**.
+    - The model is cached in the browser for subsequent visits.
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
+2.  **WebAssembly (WASM) Execution**:
+    - The model inference runs on the client's CPU (via WASM) or GPU (via WebGPU if available).
+    - We use `onnxruntime-web` to execute the neural network operations efficiently in JavaScript.
 
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
+3.  **Synthesis Pipeline**:
+    - **Text Normalization**: Converts raw text into phonemes.
+    - **Inference**: The Kokoro model predicts the audio waveform from phonemes.
+    - **Vocoder**: Generates the final audio samples at 24kHz.
+    - **Playback**: The raw float data is converted to a WAV blob and played via the HTML5 Audio element.
 
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
+## 🛠️ Setup & Running
 
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-```
+1.  **Install Dependencies**:
+    ```bash
+    npm install
+    ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+2.  **Start Development Server**:
+    ```bash
+    npm run dev
+    ```
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+3.  **Build for Production**:
+    ```bash
+    npm run build
+    ```
+    *Note: The build process copies necessary `.wasm` files to the output directory.*
 
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-```
+## 🔒 Privacy
+
+Because the inference happens locally:
+- **No text is sent to any server.**
+- Your data stays on your device.
+- It works offline after the initial model download.
+
+## 🧩 Deployment
+
+This is a static site. When deploying (e.g., to Vercel or Netlify), ensure the `.wasm` files are served with the `application/wasm` MIME type.
