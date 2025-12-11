@@ -1,5 +1,7 @@
 # Client-Side Neural TTS (Kokoro-82M)
 
+![Tech Stack Infographic](tech_stack.png)
+
 A high-quality, privacy-focused Text-to-Speech application that runs entirely in your browser. Powered by **Kokoro-82M** and **WebAssembly**.
 
 ## 🚀 Technology Stack
