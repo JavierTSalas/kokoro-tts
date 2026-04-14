@@ -60,28 +60,26 @@ export const TTSGenerator: React.FC = () => {
     setAudioUrl(null);
 
     try {
-      setProgress('Generating speech...');
-      // Generate audio
-      const audio: any = await ttsRef.current.generate(text, {
-        voice: voice as any, // Cast to any to avoid strict keyof checks for now
-      });
-      
-      console.log("Generated audio object:", audio);
+      // Kokoro-82M has a hard limit of ~510 tokens per generation pass.
+      // Split text at sentence boundaries into chunks ≤500 chars to stay safely under it.
+      const chunks = splitIntoChunks(text, 500);
+      const audioSegments: Float32Array[] = [];
+      let sampleRate = 24000;
 
-      // Convert audio buffer to blob url
-      // Transformers.js RawAudio usually has { data: Float32Array, sampling_rate: number }
-      // The previous code expected 'audio' property which was wrong for RawAudio type, 
-      // but let's check what it actually returns.
-      // Based on types, it returns RawAudio.
-      
-      const audioData = audio.audio || audio.data; // coping with potential structure
-      const sampleRate = audio.sampling_rate || audio.sampleRate || 24000;
+      for (let i = 0; i < chunks.length; i++) {
+        setProgress(`Generating speech… (chunk ${i + 1}/${chunks.length})`);
+        const audio: any = await ttsRef.current.generate(chunks[i], {
+          voice: voice as any,
+        });
 
-      if (!audioData) {
-        throw new Error("Generated audio data is missing");
+        const audioData = audio.audio || audio.data;
+        if (!audioData) throw new Error("Generated audio data is missing");
+        sampleRate = audio.sampling_rate || audio.sampleRate || 24000;
+        audioSegments.push(audioData);
       }
-      
-      const wavBlob = audioToWav(audioData, sampleRate);
+
+      const combined = concatenateFloat32Arrays(audioSegments);
+      const wavBlob = audioToWav(combined, sampleRate);
       const url = URL.createObjectURL(wavBlob);
       setAudioUrl(url);
       setProgress('Done!');
@@ -137,6 +135,38 @@ export const TTSGenerator: React.FC = () => {
     </div>
   );
 };
+
+// Split text at sentence boundaries into chunks not exceeding maxChars characters.
+// This keeps each chunk within Kokoro-82M's ~510-token generation limit.
+function splitIntoChunks(text: string, maxChars: number): string[] {
+  // Match sentences ending with . ! ? or newlines (including trailing whitespace)
+  const sentences = text.match(/[^.!?\n]+[.!?\n]*/g) ?? [text];
+  const chunks: string[] = [];
+  let current = '';
+
+  for (const sentence of sentences) {
+    if (current.length > 0 && (current + sentence).length > maxChars) {
+      chunks.push(current.trim());
+      current = sentence;
+    } else {
+      current += sentence;
+    }
+  }
+  if (current.trim()) chunks.push(current.trim());
+  return chunks;
+}
+
+// Concatenate multiple Float32Arrays into one (for multi-chunk audio).
+function concatenateFloat32Arrays(arrays: Float32Array[]): Float32Array {
+  const total = arrays.reduce((sum, a) => sum + a.length, 0);
+  const out = new Float32Array(total);
+  let offset = 0;
+  for (const a of arrays) {
+    out.set(a, offset);
+    offset += a.length;
+  }
+  return out;
+}
 
 // Helper function to create WAV file from Float32Array
 function audioToWav(channels: Float32Array, sampleRate: number) {
