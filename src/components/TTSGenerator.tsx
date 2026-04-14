@@ -21,6 +21,7 @@ export const TTSGenerator: React.FC = () => {
   const [progress, setProgress] = useState<string>('');
 
   const ttsRef = useRef<KokoroTTS | null>(null);
+  const prevAudioUrlRef = useRef<string | null>(null);
 
   useEffect(() => {
     // Initialize TTS model
@@ -82,7 +83,11 @@ export const TTSGenerator: React.FC = () => {
       }
       
       const wavBlob = audioToWav(audioData, sampleRate);
+      if (prevAudioUrlRef.current) {
+        URL.revokeObjectURL(prevAudioUrlRef.current);
+      }
       const url = URL.createObjectURL(wavBlob);
+      prevAudioUrlRef.current = url;
       setAudioUrl(url);
       setProgress('Done!');
     } catch (err: any) {
@@ -132,7 +137,7 @@ export const TTSGenerator: React.FC = () => {
       )}
 
       {audioUrl && (
-        <audio controls src={audioUrl} autoPlay />
+        <audio key={audioUrl} controls src={audioUrl} autoPlay />
       )}
     </div>
   );
