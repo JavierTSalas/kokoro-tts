@@ -53,6 +53,36 @@ export const TTSGenerator: React.FC = () => {
     };
   }, []);
 
+  // Kokoro-82M has a hard limit of 510 phoneme tokens per inference pass.
+  // ~500 characters of English text is a safe proxy for staying under ~450 tokens,
+  // leaving headroom before the limit where quality degrades.
+  const MAX_CHUNK_CHARS = 500;
+
+  // Split text at sentence boundaries, then group into chunks that each stay
+  // under MAX_CHUNK_CHARS. Splitting on sentence endings keeps prosody natural.
+  function splitIntoChunks(input: string): string[] {
+    // Split on sentence-ending punctuation, keeping the delimiter attached.
+    const sentences = input.match(/[^.!?;]+[.!?;]*/g) ?? [input];
+    const chunks: string[] = [];
+    let current = '';
+
+    for (const sentence of sentences) {
+      const trimmed = sentence.trim();
+      if (!trimmed) continue;
+
+      if (current.length + trimmed.length + 1 <= MAX_CHUNK_CHARS) {
+        current = current ? `${current} ${trimmed}` : trimmed;
+      } else {
+        if (current) chunks.push(current);
+        // A single sentence that exceeds the limit must still be sent as-is;
+        // the model will handle it as best it can.
+        current = trimmed;
+      }
+    }
+    if (current) chunks.push(current);
+    return chunks;
+  }
+
   const handleGenerate = async () => {
     if (!ttsRef.current || !text) return;
 
@@ -61,28 +91,34 @@ export const TTSGenerator: React.FC = () => {
     setAudioUrl(null);
 
     try {
-      setProgress('Generating speech...');
-      // Generate audio
-      const audio: any = await ttsRef.current.generate(text, {
-        voice: voice as any, // Cast to any to avoid strict keyof checks for now
-      });
-      
-      console.log("Generated audio object:", audio);
+      const chunks = splitIntoChunks(text);
+      const audioBuffers: Float32Array[] = [];
+      let sampleRate = 24000;
 
-      // Convert audio buffer to blob url
-      // Transformers.js RawAudio usually has { data: Float32Array, sampling_rate: number }
-      // The previous code expected 'audio' property which was wrong for RawAudio type, 
-      // but let's check what it actually returns.
-      // Based on types, it returns RawAudio.
-      
-      const audioData = audio.audio || audio.data; // coping with potential structure
-      const sampleRate = audio.sampling_rate || audio.sampleRate || 24000;
+      for (let i = 0; i < chunks.length; i++) {
+        setProgress(`Generating speech… (part ${i + 1} of ${chunks.length})`);
+        const audio: any = await ttsRef.current.generate(chunks[i], {
+          voice: voice as any,
+        });
 
-      if (!audioData) {
-        throw new Error("Generated audio data is missing");
+        const audioData: Float32Array | undefined = audio.audio || audio.data;
+        if (!audioData) {
+          throw new Error(`Generated audio data is missing for chunk ${i + 1}`);
+        }
+        sampleRate = audio.sampling_rate || audio.sampleRate || 24000;
+        audioBuffers.push(audioData);
       }
-      
-      const wavBlob = audioToWav(audioData, sampleRate);
+
+      // Concatenate all Float32Array chunks into one buffer.
+      const totalLength = audioBuffers.reduce((sum, buf) => sum + buf.length, 0);
+      const combined = new Float32Array(totalLength);
+      let offset = 0;
+      for (const buf of audioBuffers) {
+        combined.set(buf, offset);
+        offset += buf.length;
+      }
+
+      const wavBlob = audioToWav(combined, sampleRate);
       if (prevAudioUrlRef.current) {
         URL.revokeObjectURL(prevAudioUrlRef.current);
       }
