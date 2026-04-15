@@ -1,7 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { KokoroTTS } from 'kokoro-js';
 
-// Define voice options based on Kokoro's available voices (commonly supported ones)
 const VOICES = [
   { id: 'af_bella', name: 'Bella (US Female)' },
   { id: 'af_nicole', name: 'Nicole (US Female)' },
@@ -11,92 +9,185 @@ const VOICES = [
   { id: 'bm_george', name: 'George (UK Male)' },
 ];
 
+const FACTS = [
+  'Kokoro-82M has just 82 million parameters — roughly 40× smaller than most neural TTS models.',
+  'Everything runs in your browser via ONNX Runtime. No audio ever leaves your device.',
+  'Long text is split at sentence boundaries to stay within the model\'s 510-token limit per pass.',
+  'Neural TTS models prosody and phonemes end-to-end — no pre-recorded audio clips involved.',
+  'The ONNX model weights are cached after the first download, so future runs start instantly.',
+];
+
+type Stage = 'idle' | 'splitting' | 'generating' | 'stitching' | 'done';
+
+const STAGE_LABELS: Record<Stage, string> = {
+  idle: '',
+  splitting: 'Splitting text…',
+  generating: 'Generating audio…',
+  stitching: 'Stitching audio…',
+  done: 'Done!',
+};
+
+// Messages the worker can send back to the main thread.
+type WorkerOutMsg =
+  | { type: 'ready' }
+  | { type: 'chunk_done'; audio: Float32Array; sampleRate: number }
+  | { type: 'error'; message: string };
+
 export const TTSGenerator: React.FC = () => {
-  const [text, setText] = useState<string>('Hello! This is a test of high-quality client-side text to speech.');
+  // Uncontrolled textarea — no re-renders while typing.
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [voice, setVoice] = useState<string>('af_bella');
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [isModelLoading, setIsModelLoading] = useState<boolean>(false);
+  const [workerReady, setWorkerReady] = useState<boolean>(false);
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [progress, setProgress] = useState<string>('');
+  const [stage, setStage] = useState<Stage>('idle');
+  const [chunkIndex, setChunkIndex] = useState(0);
+  const [chunkTotal, setChunkTotal] = useState(1);
+  const [factIndex, setFactIndex] = useState(0);
 
-  const ttsRef = useRef<KokoroTTS | null>(null);
+  const workerRef = useRef<Worker | null>(null);
+  // Holds the resolve/reject for the currently in-flight chunk postMessage.
+  const pendingRef = useRef<{
+    resolve: (v: { audio: Float32Array; sampleRate: number }) => void;
+    reject: (e: Error) => void;
+  } | null>(null);
+  const prevAudioUrlRef = useRef<string | null>(null);
 
+  // Rotate facts every 3.5s while loading.
   useEffect(() => {
-    // Initialize TTS model
-    const initTTS = async () => {
-      try {
-        setIsModelLoading(true);
-        setProgress('Loading model (approx 80MB)...');
-        // Correct initialization using static method
-        const tts = await KokoroTTS.from_pretrained("onnx-community/Kokoro-82M-v1.0-ONNX", {
-          dtype: "fp32", // fp32 is safer for compatibility
-        });
-        ttsRef.current = tts;
+    if (!isLoading) return;
+    const id = setInterval(() => {
+      setFactIndex(i => (i + 1) % FACTS.length);
+    }, 3500);
+    return () => clearInterval(id);
+  }, [isLoading]);
+
+  // Spawn worker once on mount; terminate on unmount.
+  useEffect(() => {
+    setIsModelLoading(true);
+
+    const worker = new Worker(
+      new URL('../tts.worker.ts', import.meta.url),
+      { type: 'module' },
+    );
+
+    worker.onmessage = (e: MessageEvent<WorkerOutMsg>) => {
+      const msg = e.data;
+      if (msg.type === 'ready') {
         setIsModelLoading(false);
-        setProgress('Model ready!');
-      } catch (err: any) {
-        console.error("Failed to initialize TTS:", err);
-        setError("Failed to load TTS model. " + (err.message || String(err)));
+        setWorkerReady(true);
+      } else if (msg.type === 'chunk_done') {
+        pendingRef.current?.resolve({ audio: msg.audio, sampleRate: msg.sampleRate });
+        pendingRef.current = null;
+      } else if (msg.type === 'error') {
+        if (pendingRef.current) {
+          // Error during inference — reject the in-flight chunk promise.
+          pendingRef.current.reject(new Error(msg.message));
+          pendingRef.current = null;
+        } else {
+          // Error during model load.
+          setError('Failed to load TTS model: ' + msg.message);
+          setIsModelLoading(false);
+        }
+      }
+    };
+
+    worker.onerror = (e) => {
+      const msg = e.message || 'Unknown worker error';
+      if (pendingRef.current) {
+        pendingRef.current.reject(new Error(msg));
+        pendingRef.current = null;
+      } else {
+        setError('Worker error: ' + msg);
         setIsModelLoading(false);
       }
     };
-    
-    // Check if we need simple init or complex one. 
-    // The kokoro-js documentation is sparse, but usually standard init works.
-    // If this fails, we might need a specific correct import.
-    initTTS();
+
+    workerRef.current = worker;
+    worker.postMessage({ type: 'load' });
 
     return () => {
-      // Cleanup if needed
+      worker.terminate();
+      workerRef.current = null;
     };
   }, []);
 
+  // Send one chunk to the worker and await its Float32Array result.
+  function generateChunk(text: string, voice: string): Promise<{ audio: Float32Array; sampleRate: number }> {
+    return new Promise((resolve, reject) => {
+      pendingRef.current = { resolve, reject };
+      workerRef.current!.postMessage({ type: 'generate', text, voice });
+    });
+  }
+
   const handleGenerate = async () => {
-    if (!ttsRef.current || !text) return;
+    const text = textareaRef.current?.value.trim() ?? '';
+    if (!workerRef.current || !workerReady || !text) return;
 
     setIsLoading(true);
     setError(null);
     setAudioUrl(null);
+    setFactIndex(0);
 
     try {
-      setProgress('Generating speech...');
-      // Generate audio
-      const audio: any = await ttsRef.current.generate(text, {
-        voice: voice as any, // Cast to any to avoid strict keyof checks for now
-      });
-      
-      console.log("Generated audio object:", audio);
+      setStage('splitting');
+      const chunks = splitIntoChunks(text);
+      setChunkTotal(chunks.length);
+      setChunkIndex(0);
 
-      // Convert audio buffer to blob url
-      // Transformers.js RawAudio usually has { data: Float32Array, sampling_rate: number }
-      // The previous code expected 'audio' property which was wrong for RawAudio type, 
-      // but let's check what it actually returns.
-      // Based on types, it returns RawAudio.
-      
-      const audioData = audio.audio || audio.data; // coping with potential structure
-      const sampleRate = audio.sampling_rate || audio.sampleRate || 24000;
+      const audioBuffers: Float32Array[] = [];
+      let sampleRate = 24000;
 
-      if (!audioData) {
-        throw new Error("Generated audio data is missing");
+      setStage('generating');
+      for (let i = 0; i < chunks.length; i++) {
+        setChunkIndex(i + 1);
+        const result = await generateChunk(chunks[i], voice);
+        sampleRate = result.sampleRate;
+        audioBuffers.push(result.audio);
       }
-      
-      const wavBlob = audioToWav(audioData, sampleRate);
+
+      setStage('stitching');
+      const totalLength = audioBuffers.reduce((sum, buf) => sum + buf.length, 0);
+      const combined = new Float32Array(totalLength);
+      let offset = 0;
+      for (const buf of audioBuffers) {
+        combined.set(buf, offset);
+        offset += buf.length;
+      }
+
+      const wavBlob = audioToWav(combined, sampleRate);
+      if (prevAudioUrlRef.current) URL.revokeObjectURL(prevAudioUrlRef.current);
       const url = URL.createObjectURL(wavBlob);
+      prevAudioUrlRef.current = url;
       setAudioUrl(url);
-      setProgress('Done!');
+      setStage('done');
     } catch (err: any) {
       console.error(err);
-      setError("Generation failed: " + (err.message || String(err)));
+      setError('Generation failed: ' + (err.message || String(err)));
+      setStage('idle');
     } finally {
       setIsLoading(false);
     }
   };
 
+  const progressPct =
+    stage === 'splitting' ? 5
+    : stage === 'generating' ? 10 + (chunkIndex / chunkTotal) * 75
+    : stage === 'stitching' ? 90
+    : stage === 'done' ? 100
+    : 0;
+
+  const stageLabel =
+    stage === 'generating' && chunkTotal > 1
+      ? `Generating audio (chunk ${chunkIndex} of ${chunkTotal})…`
+      : STAGE_LABELS[stage];
+
   return (
     <div className="card">
       <h2>Client-Side AI Voice</h2>
-      
+
       <div className="controls">
         <select value={voice} onChange={(e) => setVoice(e.target.value)} disabled={isLoading}>
           {VOICES.map(v => (
@@ -106,76 +197,100 @@ export const TTSGenerator: React.FC = () => {
       </div>
 
       <textarea
-        value={text}
-        onChange={(e) => setText(e.target.value)}
-        placeholder="Type something here..."
+        ref={textareaRef}
+        defaultValue="Hello! This is a test of high-quality client-side text to speech."
+        placeholder="Type something here…"
         disabled={isLoading}
       />
 
       <div className="controls">
-        <button onClick={handleGenerate} disabled={isLoading || isModelLoading || !ttsRef.current}>
-          {isLoading ? 'Generating...' : 'Generate Voice'}
+        <button onClick={handleGenerate} disabled={isLoading || isModelLoading || !workerReady}>
+          {isModelLoading ? 'Loading model…' : isLoading ? 'Generating…' : 'Generate Voice'}
         </button>
       </div>
 
-      {progress && (
-        <div className="status-bar">
-          {(isLoading || isModelLoading) && <span className="loader"></span>}
-          <span>{progress}</span>
+      {isLoading && (
+        <div className="gen-panel">
+          <div className="gen-stage-row">
+            <span className="gen-stage-label">{stageLabel}</span>
+            {chunkTotal > 1 && stage === 'generating' && (
+              <span className="gen-chunk-count">{chunkIndex}/{chunkTotal}</span>
+            )}
+          </div>
+          <div className="gen-progress-track">
+            <div className="gen-progress-fill" style={{ width: `${progressPct}%` }} />
+          </div>
+          <div className="facts-panel">
+            <span className="facts-eyebrow">Did you know?</span>
+            <p className="facts-text" key={factIndex}>{FACTS[factIndex]}</p>
+          </div>
+        </div>
+      )}
+
+      {stage === 'done' && !isLoading && (
+        <div className="gen-done-row">
+          <span className="gen-done-label">Done!</span>
+          <div className="gen-progress-track gen-progress-track--done">
+            <div className="gen-progress-fill" style={{ width: '100%' }} />
+          </div>
         </div>
       )}
 
       {error && (
-        <div style={{ color: '#ff6b6b', marginTop: '1rem' }}>
+        <div style={{ color: '#ff6b6b', marginTop: '1rem', fontSize: '0.9em' }}>
           {error}
         </div>
       )}
 
       {audioUrl && (
-        <audio controls src={audioUrl} autoPlay />
+        <audio key={audioUrl} controls src={audioUrl} autoPlay />
       )}
     </div>
   );
 };
 
-// Helper function to create WAV file from Float32Array
+const MAX_CHUNK_CHARS = 500;
+
+function splitIntoChunks(input: string): string[] {
+  const sentences = input.match(/[^.!?;]+[.!?;]*/g) ?? [input];
+  const chunks: string[] = [];
+  let current = '';
+
+  for (const sentence of sentences) {
+    const trimmed = sentence.trim();
+    if (!trimmed) continue;
+    if (current.length + trimmed.length + 1 <= MAX_CHUNK_CHARS) {
+      current = current ? `${current} ${trimmed}` : trimmed;
+    } else {
+      if (current) chunks.push(current);
+      current = trimmed;
+    }
+  }
+  if (current) chunks.push(current);
+  return chunks;
+}
+
 function audioToWav(channels: Float32Array, sampleRate: number) {
-  // Convert float32 to int16 PCM
   const buffer = new ArrayBuffer(44 + channels.length * 2);
   const view = new DataView(buffer);
 
-  // RIFF identifier
   writeString(view, 0, 'RIFF');
-  // file length
   view.setUint32(4, 36 + channels.length * 2, true);
-  // RIFF type
   writeString(view, 8, 'WAVE');
-  // format chunk identifier
   writeString(view, 12, 'fmt ');
-  // format chunk length
   view.setUint32(16, 16, true);
-  // sample format (raw)
   view.setUint16(20, 1, true);
-  // channel count
   view.setUint16(22, 1, true);
-  // sample rate
   view.setUint32(24, sampleRate, true);
-  // byte rate (sample rate * block align)
   view.setUint32(28, sampleRate * 2, true);
-  // block align (channel count * bytes per sample)
   view.setUint16(32, 2, true);
-  // bits per sample
   view.setUint16(34, 16, true);
-  // data chunk identifier
   writeString(view, 36, 'data');
-  // data chunk length
   view.setUint32(40, channels.length * 2, true);
 
-  // Write the PCM samples
   let offset = 44;
   for (let i = 0; i < channels.length; i++) {
-    let s = Math.max(-1, Math.min(1, channels[i]));
-    // scale to 16-bit signed integer
+    const s = Math.max(-1, Math.min(1, channels[i]));
     view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7FFF, true);
     offset += 2;
   }

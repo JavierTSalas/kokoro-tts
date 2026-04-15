@@ -161,3 +161,96 @@ audio {
   margin-top: 1.5rem;
   border-radius: 8px;
 }
+
+/* ── Generation loading panel ── */
+.gen-panel {
+  margin-top: 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.gen-stage-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 0.875rem;
+}
+
+.gen-stage-label {
+  color: var(--text-main);
+  font-weight: 500;
+}
+
+.gen-chunk-count {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  background: var(--card-border);
+  padding: 0.15em 0.5em;
+  border-radius: 99px;
+}
+
+.gen-progress-track {
+  width: 100%;
+  height: 6px;
+  background: var(--card-border);
+  border-radius: 99px;
+  overflow: hidden;
+}
+
+.gen-progress-fill {
+  height: 100%;
+  background: linear-gradient(to right, var(--primary-color), var(--secondary-color));
+  border-radius: 99px;
+  transition: width 0.4s ease;
+}
+
+.gen-done-row {
+  margin-top: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.gen-done-label {
+  font-size: 0.8rem;
+  color: var(--secondary-color);
+  font-weight: 600;
+  text-align: left;
+}
+
+.gen-progress-track--done .gen-progress-fill {
+  background: var(--secondary-color);
+}
+
+/* ── Rotating facts panel ── */
+.facts-panel {
+  background: rgba(127, 90, 240, 0.07);
+  border: 1px solid rgba(127, 90, 240, 0.2);
+  border-radius: 10px;
+  padding: 0.9rem 1rem;
+  text-align: left;
+}
+
+.facts-eyebrow {
+  display: block;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--primary-color);
+  margin-bottom: 0.35rem;
+}
+
+.facts-text {
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+  line-height: 1.55;
+  animation: fact-fade 0.4s ease;
+}
+
+@keyframes fact-fade {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
