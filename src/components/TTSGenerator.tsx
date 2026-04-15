@@ -1,5 +1,4 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { KokoroTTS } from 'kokoro-js';
 
 const VOICES = [
   { id: 'af_bella', name: 'Bella (US Female)' },
@@ -28,12 +27,19 @@ const STAGE_LABELS: Record<Stage, string> = {
   done: 'Done!',
 };
 
+// Messages the worker can send back to the main thread.
+type WorkerOutMsg =
+  | { type: 'ready' }
+  | { type: 'chunk_done'; audio: Float32Array; sampleRate: number }
+  | { type: 'error'; message: string };
+
 export const TTSGenerator: React.FC = () => {
-  // Uncontrolled textarea: no React state per keystroke, no re-renders while typing.
+  // Uncontrolled textarea — no re-renders while typing.
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [voice, setVoice] = useState<string>('af_bella');
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [isModelLoading, setIsModelLoading] = useState<boolean>(false);
+  const [workerReady, setWorkerReady] = useState<boolean>(false);
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [stage, setStage] = useState<Stage>('idle');
@@ -41,10 +47,15 @@ export const TTSGenerator: React.FC = () => {
   const [chunkTotal, setChunkTotal] = useState(1);
   const [factIndex, setFactIndex] = useState(0);
 
-  const ttsRef = useRef<KokoroTTS | null>(null);
+  const workerRef = useRef<Worker | null>(null);
+  // Holds the resolve/reject for the currently in-flight chunk postMessage.
+  const pendingRef = useRef<{
+    resolve: (v: { audio: Float32Array; sampleRate: number }) => void;
+    reject: (e: Error) => void;
+  } | null>(null);
   const prevAudioUrlRef = useRef<string | null>(null);
 
-  // Rotate facts every 3.5s while loading
+  // Rotate facts every 3.5s while loading.
   useEffect(() => {
     if (!isLoading) return;
     const id = setInterval(() => {
@@ -53,27 +64,67 @@ export const TTSGenerator: React.FC = () => {
     return () => clearInterval(id);
   }, [isLoading]);
 
+  // Spawn worker once on mount; terminate on unmount.
   useEffect(() => {
-    const initTTS = async () => {
-      try {
-        setIsModelLoading(true);
-        const tts = await KokoroTTS.from_pretrained('onnx-community/Kokoro-82M-v1.0-ONNX', {
-          dtype: 'fp32',
-        });
-        ttsRef.current = tts;
+    setIsModelLoading(true);
+
+    const worker = new Worker(
+      new URL('../tts.worker.ts', import.meta.url),
+      { type: 'module' },
+    );
+
+    worker.onmessage = (e: MessageEvent<WorkerOutMsg>) => {
+      const msg = e.data;
+      if (msg.type === 'ready') {
         setIsModelLoading(false);
-      } catch (err: any) {
-        console.error('Failed to initialize TTS:', err);
-        setError('Failed to load TTS model. ' + (err.message || String(err)));
+        setWorkerReady(true);
+      } else if (msg.type === 'chunk_done') {
+        pendingRef.current?.resolve({ audio: msg.audio, sampleRate: msg.sampleRate });
+        pendingRef.current = null;
+      } else if (msg.type === 'error') {
+        if (pendingRef.current) {
+          // Error during inference — reject the in-flight chunk promise.
+          pendingRef.current.reject(new Error(msg.message));
+          pendingRef.current = null;
+        } else {
+          // Error during model load.
+          setError('Failed to load TTS model: ' + msg.message);
+          setIsModelLoading(false);
+        }
+      }
+    };
+
+    worker.onerror = (e) => {
+      const msg = e.message || 'Unknown worker error';
+      if (pendingRef.current) {
+        pendingRef.current.reject(new Error(msg));
+        pendingRef.current = null;
+      } else {
+        setError('Worker error: ' + msg);
         setIsModelLoading(false);
       }
     };
-    initTTS();
+
+    workerRef.current = worker;
+    worker.postMessage({ type: 'load' });
+
+    return () => {
+      worker.terminate();
+      workerRef.current = null;
+    };
   }, []);
+
+  // Send one chunk to the worker and await its Float32Array result.
+  function generateChunk(text: string, voice: string): Promise<{ audio: Float32Array; sampleRate: number }> {
+    return new Promise((resolve, reject) => {
+      pendingRef.current = { resolve, reject };
+      workerRef.current!.postMessage({ type: 'generate', text, voice });
+    });
+  }
 
   const handleGenerate = async () => {
     const text = textareaRef.current?.value.trim() ?? '';
-    if (!ttsRef.current || !text) return;
+    if (!workerRef.current || !workerReady || !text) return;
 
     setIsLoading(true);
     setError(null);
@@ -92,14 +143,9 @@ export const TTSGenerator: React.FC = () => {
       setStage('generating');
       for (let i = 0; i < chunks.length; i++) {
         setChunkIndex(i + 1);
-        const audio: any = await ttsRef.current.generate(chunks[i], {
-          voice: voice as any,
-        });
-
-        const audioData: Float32Array | undefined = audio.audio || audio.data;
-        if (!audioData) throw new Error(`Audio data missing for chunk ${i + 1}`);
-        sampleRate = audio.sampling_rate || audio.sampleRate || 24000;
-        audioBuffers.push(audioData);
+        const result = await generateChunk(chunks[i], voice);
+        sampleRate = result.sampleRate;
+        audioBuffers.push(result.audio);
       }
 
       setStage('stitching');
@@ -158,7 +204,7 @@ export const TTSGenerator: React.FC = () => {
       />
 
       <div className="controls">
-        <button onClick={handleGenerate} disabled={isLoading || isModelLoading || !ttsRef.current}>
+        <button onClick={handleGenerate} disabled={isLoading || isModelLoading || !workerReady}>
           {isModelLoading ? 'Loading model…' : isLoading ? 'Generating…' : 'Generate Voice'}
         </button>
       </div>
