@@ -1,5 +1,12 @@
 import { KokoroTTS } from 'kokoro-js';
 
+// The project tsconfig uses lib:DOM which types `self` as Window. The DOM lib
+// doesn't include DedicatedWorkerGlobalScope, so we use a local typed wrapper
+// for postMessage that matches the actual worker runtime signature.
+const workerPost = (msg: unknown, transfer?: Transferable[]) =>
+  (self as unknown as { postMessage(m: unknown, t?: Transferable[]): void })
+    .postMessage(msg, transfer);
+
 let tts: KokoroTTS | null = null;
 
 self.onmessage = async (e: MessageEvent) => {
@@ -12,14 +19,14 @@ self.onmessage = async (e: MessageEvent) => {
       tts = await KokoroTTS.from_pretrained('onnx-community/Kokoro-82M-v1.0-ONNX', {
         dtype: 'fp32',
       });
-      self.postMessage({ type: 'ready' });
+      workerPost({ type: 'ready' });
     } catch (err: any) {
-      self.postMessage({ type: 'error', message: err.message || String(err) });
+      workerPost({ type: 'error', message: err.message || String(err) });
     }
 
   } else if (msg.type === 'generate') {
     if (!tts) {
-      self.postMessage({ type: 'error', message: 'Model not loaded yet' });
+      workerPost({ type: 'error', message: 'Model not loaded yet' });
       return;
     }
     try {
@@ -29,12 +36,12 @@ self.onmessage = async (e: MessageEvent) => {
       const sampleRate: number = audio.sampling_rate || audio.sampleRate || 24000;
 
       // Transfer the underlying ArrayBuffer for zero-copy delivery to the main thread.
-      self.postMessage(
+      workerPost(
         { type: 'chunk_done', audio: audioData, sampleRate },
         [audioData.buffer],
       );
     } catch (err: any) {
-      self.postMessage({ type: 'error', message: err.message || String(err) });
+      workerPost({ type: 'error', message: err.message || String(err) });
     }
   }
 };
