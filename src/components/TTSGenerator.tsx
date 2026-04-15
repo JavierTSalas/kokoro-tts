@@ -29,7 +29,8 @@ const STAGE_LABELS: Record<Stage, string> = {
 };
 
 export const TTSGenerator: React.FC = () => {
-  const [text, setText] = useState<string>('Hello! This is a test of high-quality client-side text to speech.');
+  // Uncontrolled textarea: no React state per keystroke, no re-renders while typing.
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [voice, setVoice] = useState<string>('af_bella');
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [isModelLoading, setIsModelLoading] = useState<boolean>(false);
@@ -70,28 +71,8 @@ export const TTSGenerator: React.FC = () => {
     initTTS();
   }, []);
 
-  const MAX_CHUNK_CHARS = 500;
-
-  function splitIntoChunks(input: string): string[] {
-    const sentences = input.match(/[^.!?;]+[.!?;]*/g) ?? [input];
-    const chunks: string[] = [];
-    let current = '';
-
-    for (const sentence of sentences) {
-      const trimmed = sentence.trim();
-      if (!trimmed) continue;
-      if (current.length + trimmed.length + 1 <= MAX_CHUNK_CHARS) {
-        current = current ? `${current} ${trimmed}` : trimmed;
-      } else {
-        if (current) chunks.push(current);
-        current = trimmed;
-      }
-    }
-    if (current) chunks.push(current);
-    return chunks;
-  }
-
   const handleGenerate = async () => {
+    const text = textareaRef.current?.value.trim() ?? '';
     if (!ttsRef.current || !text) return;
 
     setIsLoading(true);
@@ -170,8 +151,8 @@ export const TTSGenerator: React.FC = () => {
       </div>
 
       <textarea
-        value={text}
-        onChange={(e) => setText(e.target.value)}
+        ref={textareaRef}
+        defaultValue="Hello! This is a test of high-quality client-side text to speech."
         placeholder="Type something here…"
         disabled={isLoading}
       />
@@ -221,6 +202,27 @@ export const TTSGenerator: React.FC = () => {
     </div>
   );
 };
+
+const MAX_CHUNK_CHARS = 500;
+
+function splitIntoChunks(input: string): string[] {
+  const sentences = input.match(/[^.!?;]+[.!?;]*/g) ?? [input];
+  const chunks: string[] = [];
+  let current = '';
+
+  for (const sentence of sentences) {
+    const trimmed = sentence.trim();
+    if (!trimmed) continue;
+    if (current.length + trimmed.length + 1 <= MAX_CHUNK_CHARS) {
+      current = current ? `${current} ${trimmed}` : trimmed;
+    } else {
+      if (current) chunks.push(current);
+      current = trimmed;
+    }
+  }
+  if (current) chunks.push(current);
+  return chunks;
+}
 
 function audioToWav(channels: Float32Array, sampleRate: number) {
   const buffer = new ArrayBuffer(44 + channels.length * 2);
